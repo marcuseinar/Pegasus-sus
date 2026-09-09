@@ -634,7 +634,8 @@ tunnel's sill) plus a neutral `start` platform in the spawn chamber,
 last pad; its geometry-lint unit test asserts every chamber / tunnel /
 pad / start waypoint is open space via `Terrain::point_in_rock`) and
 **Well, well, well** (2026-09: the second hand-drawn level — one big
-cavern, uneven roof with hanging spurs, and three vertical WELLS sunk
+cavern, uneven roof (no stalactites — they were tried and cut), and
+three vertical WELLS sunk
 into its floor: **winding** (three smooth turns, 60 m), **siphon**
 (down, a 180° U-turn UP, then a reversed U-turn back DOWN, 56 m) and
 **almost-straight** (90 m, the long haul), each ending in a bare dead
