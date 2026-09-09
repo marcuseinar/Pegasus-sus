@@ -1477,6 +1477,94 @@ mod tests {
     }
 
     #[test]
+    fn wells_geometry_keeps_the_cavern_and_every_shaft_open() {
+        // Geometry lint for "Well, well, well": the cavern highway, all three
+        // well shafts (sampled down their centre lines) and every base deck
+        // must be open space. The shafts are drawn as perpendicular offsets
+        // of a centre line, so an authoring slip shows up as rock ON that
+        // line — exactly what this walks.
+        let level = Level::parse(include_str!("../../levels/wells.level"));
+        assert_eq!(level.scoring, Scoring::Time);
+        let t = level.terrain.as_ref().expect("wells must be a terrain level");
+        assert_eq!(t.pads.len(), 3, "Well, well, well ships with three bases");
+
+        let sp = t.start.expect("Well, well, well spawns on a start platform");
+        for dx in [-PAD_HALF_W, 0.0, PAD_HALF_W] {
+            assert!(!t.point_in_rock(glam::vec2(sp.x + dx, sp.y + 0.4)),
+                "start platform deck is buried in rock");
+        }
+        assert!(!t.point_in_rock(glam::vec2(0.0, level.stand_y(0.0))));
+
+        // The cavern highway: open air from wall to wall, above the floor
+        // humps and below the hanging spurs.
+        for x in (-22..=136).step_by(4) {
+            assert!(!t.point_in_rock(glam::vec2(x as f32, 10.0)),
+                "cavern highway blocked at x={x}");
+        }
+        // Each well's centre line, mouth to floor: (x, depth) pairs.
+        let shafts: [(&str, &[(f32, f32)]); 3] = [
+            ("winding", &[(31.4, 5.0), (35.7, 10.0), (37.1, 15.0), (34.2, 20.0),
+                          (29.1, 25.0), (24.9, 30.0), (23.6, 35.0)]),
+            ("lightning", &[(72.0, 5.0), (70.1, 10.0), (66.4, 15.0), (62.0, 20.0),
+                            (70.4, 25.0), (78.0, 30.0), (73.7, 35.0), (70.0, 45.0)]),
+            ("deep", &[(118.8, 10.0), (119.6, 20.0), (119.2, 30.0), (117.9, 40.0),
+                       (116.7, 50.0), (116.5, 60.0), (117.4, 70.0), (118.8, 80.0),
+                       (119.2, 88.0)]),
+        ];
+        for (name, line) in shafts {
+            // The mouth is a hole in the cavern floor: open from above.
+            let (mouth_x, _) = line[0];
+            for h in [2.0f32, 6.0, 12.0] {
+                assert!(!t.point_in_rock(glam::vec2(mouth_x, h)),
+                    "{name} well mouth blocked {h} m above the floor");
+            }
+            for &(x, d) in line {
+                assert!(!t.point_in_rock(glam::vec2(x, -d)),
+                    "{name} well is rock at ({x}, -{d})");
+            }
+        }
+        for p in &t.pads {
+            for dx in [-PAD_HALF_W, 0.0, PAD_HALF_W] {
+                assert!(!t.point_in_rock(glam::vec2(p.x + dx, p.y + 0.4)),
+                    "base at ({},{}) deck is buried in rock", p.x, p.y);
+            }
+            // Room above the deck to shed a long fall's speed before landing.
+            for h in [3.0f32, 6.0, 9.0] {
+                assert!(!t.point_in_rock(glam::vec2(p.x, p.y + h)),
+                    "base at ({},{}) has no braking room {h} m up", p.x, p.y);
+            }
+        }
+    }
+
+    #[test]
+    fn every_wells_base_is_landable_and_the_last_one_completes() {
+        // Each of the three bases must be a real landing: park on it with the
+        // other two already visited and the run completes there. Catches a
+        // deck the shaft geometry won't let the ship settle on.
+        let level = Level::parse(include_str!("../../levels/wells.level"));
+        let pads = level.terrain.as_ref().unwrap().pads.clone();
+        let all = (1u64 << pads.len()) - 1;
+        for (i, pad) in pads.iter().enumerate() {
+            let mut sim = Sim::new(level.clone());
+            let mut kf = spawn_keyframe(&level, 0.0);
+            kf.x = pad.x;
+            kf.y = pad.y + 0.78;
+            kf.visited = all & !(1 << i); // every base but this one
+            sim.restore(&kf);
+            let mut completed = false;
+            for _ in 0..(3.0 / PHYSICS_DT) as u32 {
+                if sim.tick(InputState::default()).completed {
+                    completed = true;
+                    break;
+                }
+            }
+            assert!(completed, "base {i} at ({},{}) never registered a landing",
+                pad.x, pad.y);
+            assert!(!sim.crashed, "base {i} landing destroyed the ship");
+        }
+    }
+
+    #[test]
     fn spawn_has_ground_under_the_ship() {
         // The window syncs inside restore/tick, so even tick 0 collides:
         // an idle ship must still be standing (not fallen through) after 2 s.
