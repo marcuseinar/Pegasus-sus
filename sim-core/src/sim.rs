@@ -1506,7 +1506,10 @@ mod tests {
         // bolt hairpins back on itself, so these track the real shapes — a
         // shaft that stopped turning would still pass point_in_rock, but the
         // waypoints would no longer sit on its centre line.
-        let shafts: [(&str, f32, &[(f32, f32)]); 3] = [
+        // (name, mouth x, centre line) — an alias because the tuple trips
+        // clippy::type_complexity written out inline.
+        type Shaft = (&'static str, f32, &'static [(f32, f32)]);
+        let shafts: [Shaft; 3] = [
             ("winding", 30.0,
              &[(33.8, 5.0), (36.7, 10.0), (26.6, 15.0), (23.3, 20.0),
                (33.4, 25.0), (36.8, 30.0), (31.2, 35.0)]),
