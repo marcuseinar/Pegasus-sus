@@ -593,6 +593,7 @@ generator — all world generation is `Level` methods, so a level IS the world:
 | `pad_spacing` | 40–2000 (clamped) | Metres between pad slots (`PAD_SPACING = 130` is the default) |
 | `time_limit` | 5–1200 s (clamped) | **Hard run clock** (2026-07, The Flux Sprint): the run ENDS the tick the clock reaches the limit — `Sim.completed` fires like a time level's last pad, and the sim **parks the ship where it is** (photo finish: forces/torques reset, velocities zeroed, gravity scale 0, `prev_vel` zeroed so the park can't read as an impact dv) so the controls-dead ship can't coast into rock during the game-over grace. Stored as `Level.time_limit_ticks` (seconds ÷ `PHYSICS_DT`, exact integer cutoff — identical in live play and resim; `Sim::restore` re-seeds the completed+parked state from a keyframe's `run_ticks`, so replay seeks land on the frozen finish). Score keeps the level's own scoring — on `distance` the score is the frozen `max_dist` (`max_dist` is gated on `!completed`). HUD shows a **countdown** (`TIME m:ss.t` remaining, clock-sized, amber ≤ 10 s / red ≤ 5 s; the BEST line moves down into the attribution slot); banners/game-over read **TIME'S UP** instead of LEVEL COMPLETE (`complete_msg`, `levelHasTimeLimit` JS-side). Forces **replay format v5** (see "Hybrid recording"); the clamp keeps runs far below the backend's 30-min resim cap |
 | `goal_distance` | 100–20000 m (clamped) | **Goal time trial** (2026-07, The Flux Dash): a **FINISH pad** at x = ±goal_distance (both directions — deck built like `pad_spec` over the max floor, but NEVER skipped; `Level::goal_pad_spec`), keyed in `Sim.pads` on the `GOAL_SLOT_POS`/`GOAL_SLOT_NEG` sentinels (i64::MAX / MAX−1 — the pads window tests them by true x position, same ±20 m margin as the slot window so retain/insert never churn; replicated per layer like every pad). On a `time`-scored level the finish pad's FIRST landing ends the run (`Sim.completed`; the ship is already settled on the deck, so no park is needed — unlike `time_limit`); regular pads along the way register + refuel but never flash or complete. `obstacle_spec` keeps 9 m and `pad_spec` 12 m clear of the finish; `stand_y` prefers the finish deck (inert on shipped levels, load-bearing for tests/restores onto it). Keyframe `visited` mask on goal levels: bit 0 = +x finish, bit 1 = −x (restore rebuilds visits + completed from them). Procedural only — parse zeroes it under `terrain`. Forces **replay format v5** |
+| `fuel_scale` | 0.1–20 (clamped) | **Endurance multiplier** (2026-09, Well, well, well): the main + RCS burn rates are DIVIDED by it, so `5` is a tank that lasts five times as long. The BURN is scaled, never `FUEL_MAX` — the HUD gauge is a percentage and `PAD_REFUEL_PER_S` is a fixed units/s into a fixed tank, so scaling the tank instead would silently change the gauge's meaning and make pad refuel stops 5× longer. Physics-relevant → rides in `LevelParams`, forcing **replay format v6** (written only when ≠ 1, so every v3/v4/v5 blob stays byte-identical). Reach for it when a level's geometry, not its fuel, is meant to be the challenge |
 | `seed` | u32 / `random` | **0 = the legacy world bit-for-bit** (zero harmonic phases, untouched slot hashes — pinned by the pre-Level unit tests still passing unchanged). Any other seed re-phases the cave harmonics and re-keys every slot hash. The half-width harmonics guarantee ≥ 2.5 m clearance for ANY phases (unit-tested), so no seed can pinch the cave shut. **`seed = random`** (`Level::random_seed`, 2026-07): the game rolls a fresh CONCRETE seed at every level load AND every restart (`with_rolled_seed` in main.rs — frame-side wall clock × counter, never 0; nondeterminism stays out of sim.rs), so each attempt flies brand-new rock. The flag is metadata only: world gen reads `seed`, `LevelParams` carries the rolled concrete value (not the flag), so replays/ghost/verification re-sim the exact world flown. The identical-re-push no-op uses `Level::same_file_as` (seed-neutralized for random levels) instead of `==`. The racing ghost is inert on such levels — a pushed ghost's recorded seed never matches the fresh world, so the adoption params equality drops it (BEST/record name still work). **One leak needed a second gate (fixed 2026-08)**: when YOU set the record, the submitted run comes back as the ghost while the wrecked sim still holds the seed it was flown on — it passes adoption, and the restart re-roll would then race it through the wrong rock; the reset block re-checks `ghost_rec` against the re-rolled params and drops the orphan (unit-tested) |
 | `poly` | `x,y x,y …` | **Hand-drawn terrain** (Across / Elasto Mania model): one SOLID ROCK polygon per line (≥ 3 verts, concave OK, overlaps OK — buried edges are unreachable; winding normalized to CCW on parse). Any `poly` line puts the level in hand-drawn mode: `Level.terrain = Some(Terrain)`, procedural gen off (shafts/obstacles forced off), every edge a segment collider loaded ONCE (no sliding window — hand-drawn maps are finite; `Sim.terrain_loaded` guards the one-shot insert, fixed file order keeps Rapier handle numbering deterministic) |
 | `pad` | `x,y` | Hand-placed pad (deck centre x, deck top y) — terrain levels only; keyed `(index, 0)` in `Sim.pads`, same landing/refuel/score logic |
@@ -634,10 +635,12 @@ last pad; its geometry-lint unit test asserts every chamber / tunnel /
 pad / start waypoint is open space via `Terrain::point_in_rock`) and
 **Well, well, well** (2026-09: the second hand-drawn level — one big
 cavern, uneven roof with hanging spurs, and three vertical WELLS sunk
-into its floor: winding (three smooth turns, 40 m), lightning (a
-KISS-logo bolt, 50 m) and almost-straight (90 m, the long haul), each
-ending in a bare dead end with a base on it, plus a neutral `start`
-platform at x = 0.
+into its floor: **winding** (three smooth turns, 60 m), **siphon**
+(down, a 180° U-turn UP, then a reversed U-turn back DOWN, 56 m) and
+**almost-straight** (90 m, the long haul), each ending in a bare dead
+end with a base on it, plus a neutral `start` platform at x = 0. Flies
+on **`fuel_scale = 5`** (see that key): the wells are long enough that a
+stock tank made the climbs a fuel puzzle rather than a flying one.
 **Time-scored**: down and up each well, the run ends on the last base.
 Its shafts are drawn as PERPENDICULAR offsets of a centre line (a
 horizontal offset would pinch the corridor wherever the shaft leans),
@@ -650,20 +653,32 @@ one still easing over). **Curvature does NOT bound the amplitude** — the
 tempting assumption, and wrong: where the centre line's radius drops
 under the half-width the mitred inner wall self-intersects, but clipping
 that loop (`defold`) IS the correct offset — the corridor opens into a
-rounded bay instead of pinching, so a 40 m shaft can hold three ±7.5 m
-turns at a measured-constant 9 m width. What actually bounds the shapes
-is the rock left between neighbouring wells (≥ 11 m here) and, at the
-bolt's hairpins, stroke length: an acute turn's mitre runs
-`half_width / cos(dev/2)` (~13 m at 135°) along both neighbours, so
-strokes shorter than the two mitres meeting on them collapse. A bolt's
-reversal is twice its strokes' rake off vertical, so KISS-logo hairpins
-mean near-horizontal strokes. The basement is vertical rock
-strips between the wells plus a plug under each floor — overlapping polys,
-buried edges unreachable, the Hollows frame idiom. Lint tests walk every
-shaft's centre line, PIN THE SHAPES (winding ≥ 3 direction changes, bolt
-strokes raked ≥ 2:1 — a shaft flattened to a plain vertical hole passes
-every point-in-rock check otherwise) and land the ship on all three
-bases).
+rounded bay instead of pinching, so the shaft holds three ±8 m turns at a
+measured-constant 9 m width. What actually bounds the shapes is the rock
+left between neighbouring wells (≥ 10 m here) and, at a U-turn, the turn
+radius: 9 m against a 5.5 m half-width leaves a 3.5 m inner radius, so
+the inner wall is a real semicircle and the half-disc it encloses is
+ordinary rock hanging off the pillar above it. The siphon's legs sit one
+turn-diameter apart, which is what leaves 7 m pillars between them, and
+its upper U-turn apex is held 7.5 m below the cavern floor — any thinner
+and the climb would breach into the cavern and could be skipped.
+**The basement is ONE ROCK BLOCK PER WELL, each cut by a keyhole slit
+tracing that well's void** (top edge → down the west wall → across the
+floor → up the east wall → on along the top edge). The earlier scheme —
+vertical strips bounded by well walls — cannot express a shaft that
+doubles back, because the left/right walls swap sides the moment travel
+reverses; the slit only needs the void outline, so it takes any shape,
+needs no polygon clipper, and leaves a U-turn's inner pillar as ordinary
+rock. **Rock extends `OUTER` = 45 m past anything reachable**: the
+world's outer faces are exposed (nothing is behind them), so the renderer
+lights an edge band along each, and at the original 16 m those bands hung
+in the void below the deep well and past the cavern walls — visible rock
+edges you could never crash into. Lint tests walk every shaft's centre
+line IN PATH ORDER (the siphon's depth is not monotonic), PIN THE SHAPES
+(winding ≥ 3 sideways reversals; siphon exactly 2 VERTICAL reversals plus
+a real climb; deep well wanders < 4 m — a shaft flattened to a plain
+vertical hole passes every point-in-rock check otherwise) and land the
+ship on all three bases).
 **The Caves** (the original shafted world) was retired 2026-07 with The
 Rift — its world survives as the compiled-in `Level::demo()` (`pads`
 scoring), which remains the no-manifest fallback and the fixture for the
@@ -1166,7 +1181,10 @@ is gameplay, not telemetry — it stays always-on.)
 
 `FUEL_MAX = 100`; the main engine burns `FUEL_BURN_MAIN = 3.5/s` at **full
 throttle** (~28 s of continuous thrust; partial throttle burns proportionally),
-RCS burns `FUEL_BURN_RCS = 1.2/s`. `thrusting_now` and the
+RCS burns `FUEL_BURN_RCS = 1.2/s`. Both are divided by the level's
+**`fuel_scale`** (see the Levels table; 1 everywhere but Well, well, well) —
+the burn is scaled rather than the tank precisely so this section's numbers
+stay the meaning of the HUD gauge and of `PAD_REFUEL_PER_S`. `thrusting_now` and the
 RCS gates (`rcs_ok`) require `fuel > 0` — an empty tank kills engine, RCS,
 particles and glow, and immediately shows "OUT OF FUEL". **Running dry
 ends the run**: `FUEL_OUT_END_SECS = 2.5 s` after the tank empties —
@@ -1435,7 +1453,11 @@ for now:
   `time_limit_ticks` u32 + `goal_distance` f32 right after the flags
   byte, written only by time-LIMITED or GOAL levels — The Flux Sprint /
   The Flux Dash — same per-recording rule, so v3/v4 blobs stay
-  byte-identical). **No backward
+  byte-identical; **v6** = v5 + `fuel_scale` f32 right after, written
+  only by levels with a per-level endurance multiplier — Well, well,
+  well — same rule again. Each version is a strict SUPERSET of the last,
+  so the reads are `>=` comparisons, not `==`: v6 carries the v5 fields
+  too). **No backward
   compatibility while iterating** — `deserialize` rejects pre-v3
   versions, so older server blobs stop decoding (watch/ghost pushes
   no-op gracefully); add version-tolerant reads when the game is

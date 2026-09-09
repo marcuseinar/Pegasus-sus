@@ -105,6 +105,12 @@ pub struct Level {
     // `terrain`). Physics-relevant (the finish decks are colliders) → rides
     // in LevelParams (replay format v5).
     pub goal_distance: f32,
+    // Endurance multiplier: the fuel burn rates are DIVIDED by this, so 5.0
+    // is a tank that lasts five times as long (file key `fuel_scale`). The
+    // BURN is scaled rather than the tank so the HUD's percentage gauge and
+    // the pad refuel time stay exactly as they are on every other level.
+    // Physics-relevant: it rides in LevelParams (replay format v6).
+    pub fuel_scale: f32,
     // `seed = random` in the level file: the frontend rolls a FRESH concrete
     // `seed` at every load/reset, so each attempt flies brand-new rock.
     // Metadata only — world generation reads `seed`, never this flag, and it
@@ -128,6 +134,7 @@ impl Level {
             terrain: None,
             time_limit_ticks: 0,
             goal_distance: 0.0,
+            fuel_scale: 1.0,
             random_seed: false,
         }
     }
@@ -188,6 +195,14 @@ impl Level {
                 // Metres to the finish pad (see the field doc). The floor
                 // keeps the finish clear of the spawn/reset clearances; the
                 // cap keeps honest runs well under the resim ceiling.
+                // Endurance multiplier (see the field doc). Clamped: 0 or a
+                // negative would divide the burn into nonsense, and the top
+                // end keeps a tank from outlasting the resim cap.
+                "fuel_scale" => {
+                    if let Ok(f) = v.parse::<f32>() {
+                        lvl.fuel_scale = f.clamp(0.1, 20.0);
+                    }
+                }
                 "goal_distance" => {
                     if let Ok(f) = v.parse::<f32>() {
                         lvl.goal_distance = f.clamp(100.0, 20_000.0);
@@ -298,6 +313,7 @@ impl Level {
             terrain: self.terrain.clone(),
             time_limit_ticks: self.time_limit_ticks,
             goal_distance: self.goal_distance,
+            fuel_scale: self.fuel_scale,
         }
     }
 
@@ -319,6 +335,7 @@ impl Level {
             terrain: p.terrain.clone(),
             time_limit_ticks: p.time_limit_ticks,
             goal_distance: p.goal_distance,
+            fuel_scale: p.fuel_scale,
             // A replay is always of ONE concrete world — the rolled seed
             // above is that world; re-rolling would break resim.
             random_seed: false,

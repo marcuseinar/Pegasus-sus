@@ -43,9 +43,15 @@ pub const REPLAY_MAGIC: [u8; 4] = *b"PGRP";
 // (The Flux Dash). Same per-recording choice as v4: only a level using
 // one of them writes v5, so v3/v4 blobs stay byte-identical and keep
 // decoding.
+// v6: the LevelParams block gains fuel_scale (f32), right after the v5
+// fields — a per-level endurance multiplier dividing the burn rates (Well,
+// well, well flies on 5x). Same per-recording choice again: only a level
+// with fuel_scale != 1 writes v6. Each version is a SUPERSET of the last,
+// so the reads below are `>=` — v6 carries the v5 fields too.
 pub const REPLAY_FORMAT_VERSION: u16 = 3;
 pub const REPLAY_FORMAT_VERSION_EXT: u16 = 4;
 pub const REPLAY_FORMAT_VERSION_V5: u16 = 5;
+pub const REPLAY_FORMAT_VERSION_V6: u16 = 6;
 
 // Resolved control values in effect for a physics step, quantized for
 // storage. "Resolved" = after the input-combining logic (stick ramp gates,
@@ -167,13 +173,21 @@ pub struct LevelParams {
     pub terrain: Option<crate::world::Terrain>, // Some = hand-drawn world (format v4)
     pub time_limit_ticks: u32, // hard run clock, 0 = none (format v5)
     pub goal_distance: f32,    // finish-pad distance, 0 = none (format v5)
+    // Endurance multiplier: the main/RCS burn rates are DIVIDED by this, so
+    // 5.0 means a tank that lasts five times as long (format v6). Scaling
+    // the burn rather than the tank leaves the HUD's percentage gauge and
+    // the pad refuel time (a fixed units/s into a fixed tank) unchanged.
+    // 1.0 = stock. Physics-relevant, so it rides in the header.
+    pub fuel_scale: f32,
 }
 
 impl LevelParams {
     // The lowest format version whose layout can express this level — the
     // per-recording version choice that keeps every older blob decoding.
     fn format_version(&self) -> u16 {
-        if self.time_limit_ticks != 0 || self.goal_distance != 0.0 {
+        if self.fuel_scale != 1.0 {
+            REPLAY_FORMAT_VERSION_V6
+        } else if self.time_limit_ticks != 0 || self.goal_distance != 0.0 {
             REPLAY_FORMAT_VERSION_V5
         } else if self.endless != 0 || self.terrain.is_some() || self.scoring >= 2 {
             REPLAY_FORMAT_VERSION_EXT
@@ -290,7 +304,8 @@ impl Recording {
     //         level: scoring(1) shafts(1) obstacles(1) pad_spacing(4) seed(4)
     //         [v4/v5 only, right after seed: flags(1) — bit 0 endless,
     //          bit 1 terrain present; v5 only: time_limit_ticks(4) +
-    //          goal_distance(4); if flags bit 1: terrain — n_polys(2),
+    //          goal_distance(4); v6 only: fuel_scale(4);
+    //          if flags bit 1: terrain — n_polys(2),
     //          per poly n_verts(2) + verts(2×4 each); n_pads(2) +
     //          pads(2×4 each); has_start(1) [+ start 2×4]; spawn_y(4)]
     //         ticks(4) n_events(4) n_keyframes(4)      = 93 B (v3, no extras)
@@ -320,9 +335,12 @@ impl Recording {
                 | if self.level.terrain.is_some() { 2 } else { 0 };
             out.push(flags);
         }
-        if version == REPLAY_FORMAT_VERSION_V5 {
+        if version >= REPLAY_FORMAT_VERSION_V5 {
             out.extend_from_slice(&self.level.time_limit_ticks.to_le_bytes());
             out.extend_from_slice(&self.level.goal_distance.to_le_bytes());
+        }
+        if version >= REPLAY_FORMAT_VERSION_V6 {
+            out.extend_from_slice(&self.level.fuel_scale.to_le_bytes());
         }
         if let Some(t) = &self.level.terrain {
             out.extend_from_slice(&(t.polys.len() as u16).to_le_bytes());
@@ -378,7 +396,10 @@ impl Recording {
         let version = r.u16()?;
         if !matches!(
             version,
-            REPLAY_FORMAT_VERSION | REPLAY_FORMAT_VERSION_EXT | REPLAY_FORMAT_VERSION_V5
+            REPLAY_FORMAT_VERSION
+                | REPLAY_FORMAT_VERSION_EXT
+                | REPLAY_FORMAT_VERSION_V5
+                | REPLAY_FORMAT_VERSION_V6
         ) {
             return Err("unsupported version");
         }
@@ -398,13 +419,17 @@ impl Recording {
             terrain: None,
             time_limit_ticks: 0,
             goal_distance: 0.0,
+            fuel_scale: 1.0,
         };
         if version != REPLAY_FORMAT_VERSION {
             let flags = r.u8()?;
             level.endless = flags & 1;
-            if version == REPLAY_FORMAT_VERSION_V5 {
+            if version >= REPLAY_FORMAT_VERSION_V5 {
                 level.time_limit_ticks = r.u32()?;
                 level.goal_distance = r.f32()?;
+            }
+            if version >= REPLAY_FORMAT_VERSION_V6 {
+                level.fuel_scale = r.f32()?;
             }
             if flags & 2 != 0 {
                 // Same hostile-count rule as events/keyframes below: cap
@@ -543,6 +568,7 @@ mod tests {
         LevelParams {
             scoring: 0, shafts: 1, obstacles: 1, pad_spacing: 130.0, seed: 0,
             endless: 0, terrain: None, time_limit_ticks: 0, goal_distance: 0.0,
+            fuel_scale: 1.0,
         }
     }
 
@@ -678,6 +704,31 @@ mod tests {
         assert_eq!(u16::from_le_bytes([blob[4], blob[5]]), REPLAY_FORMAT_VERSION_V5);
         let (back, _) = Recording::deserialize(&blob).expect("deserialize v5 goal");
         assert_eq!(back.level, lp);
+    }
+
+    #[test]
+    fn fuel_scaled_levels_roundtrip_as_v6_and_stock_fuel_stays_older() {
+        // A per-level endurance multiplier forces the v6 layout (Well, well,
+        // well flies on 5x) and must round-trip exactly — carrying the v5
+        // fields with it, since each version is a superset of the last.
+        let lp = LevelParams {
+            scoring: 2, fuel_scale: 5.0, time_limit_ticks: 3600, ..lparams()
+        };
+        let mut rec = Recording::new(params(), lp.clone(), u32::MAX);
+        rec.push_keyframe(kf(0));
+        let blob = rec.serialize(4);
+        assert_eq!(u16::from_le_bytes([blob[4], blob[5]]), REPLAY_FORMAT_VERSION_V6);
+        let (back, _) = Recording::deserialize(&blob).expect("deserialize v6");
+        assert_eq!(back.level, lp);
+        assert_eq!(back.level.fuel_scale, 5.0);
+
+        // ...and stock fuel must NOT bump the version: every pre-existing
+        // blob has to keep its byte-identical older layout.
+        let stock = LevelParams { scoring: 1, ..lparams() };
+        let mut rec = Recording::new(params(), stock, u32::MAX);
+        rec.push_keyframe(kf(0));
+        let blob = rec.serialize(4);
+        assert_eq!(u16::from_le_bytes([blob[4], blob[5]]), REPLAY_FORMAT_VERSION);
     }
 
     #[test]

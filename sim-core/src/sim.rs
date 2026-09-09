@@ -485,15 +485,18 @@ impl Sim {
             }
             report.heading_torque = heading_torque;
 
-            // Fuel burn for whatever fired this tick.
+            // Fuel burn for whatever fired this tick, divided by the level's
+            // endurance multiplier (Level::fuel_scale, 1.0 everywhere but
+            // Well, well, well). Scaling the burn rather than the tank keeps
+            // the HUD gauge and the pad refuel rate identical across levels.
+            let burn = PHYSICS_DT / self.level.fuel_scale;
             if throttle > 0.0 {
-                self.fuel -= FUEL_BURN_MAIN * throttle * PHYSICS_DT;
+                self.fuel -= FUEL_BURN_MAIN * throttle * burn;
             }
             if rot != 0 {
-                self.fuel -= FUEL_BURN_RCS * PHYSICS_DT;
+                self.fuel -= FUEL_BURN_RCS * burn;
             } else if heading_torque != 0.0 {
-                self.fuel -=
-                    FUEL_BURN_RCS * (heading_torque.abs() / HEADING_TORQUE_MAX) * PHYSICS_DT;
+                self.fuel -= FUEL_BURN_RCS * (heading_torque.abs() / HEADING_TORQUE_MAX) * burn;
             }
             self.fuel = self.fuel.max(0.0);
         }
@@ -1501,26 +1504,24 @@ mod tests {
             assert!(!t.point_in_rock(glam::vec2(x as f32, 10.0)),
                 "cavern highway blocked at x={x}");
         }
-        // Each well: mouth x, then its centre line as (x, depth) pairs. The
-        // winding well swings east/west/east (three turns) and the lightning
-        // bolt hairpins back on itself, so these track the real shapes — a
-        // shaft that stopped turning would still pass point_in_rock, but the
-        // waypoints would no longer sit on its centre line.
+        // Each well: mouth x, then waypoints along its centre line IN PATH
+        // ORDER as (x, y). Path order, not depth order, because the siphon's
+        // depth is not monotonic — it climbs back up between its two U-turns.
         // (name, mouth x, centre line) — an alias because the tuple trips
         // clippy::type_complexity written out inline.
         type Shaft = (&'static str, f32, &'static [(f32, f32)]);
         let shafts: [Shaft; 3] = [
             ("winding", 30.0,
-             &[(33.8, 5.0), (36.7, 10.0), (26.6, 15.0), (23.3, 20.0),
-               (33.4, 25.0), (36.8, 30.0), (31.2, 35.0)]),
-            ("lightning", 72.0,
-             &[(72.0, 5.0), (69.3, 10.0), (61.3, 15.0), (62.6, 20.0),
-               (77.6, 25.0), (85.3, 30.0), (75.6, 35.0), (65.8, 40.0),
-               (64.0, 45.0)]),
+             &[(32.5, -5.0), (37.8, -13.0), (28.7, -21.0), (22.0, -29.0),
+               (30.3, -37.0), (38.0, -45.0), (32.1, -53.0)]),
+            ("siphon", 60.0,
+             &[(60.0, -11.0), (60.0, -22.0), (60.0, -33.0), (62.6, -40.4),
+               (69.7, -43.0), (76.3, -39.3), (78.0, -31.0), (78.1, -20.6),
+               (82.3, -14.3), (89.8, -13.4), (95.3, -18.6), (96.0, -28.0),
+               (96.0, -39.0), (96.0, -50.0)]),
             ("deep", 118.0,
-             &[(118.8, 10.0), (119.6, 20.0), (119.2, 30.0), (117.9, 40.0),
-               (116.7, 50.0), (116.5, 60.0), (117.4, 70.0), (118.8, 80.0),
-               (119.2, 88.0)]),
+             &[(118.8, -10.0), (119.6, -20.0), (119.2, -30.0), (117.9, -40.0),
+               (116.7, -50.0), (116.5, -60.0), (117.4, -70.0), (118.8, -80.0)]),
         ];
         for (name, mouth_x, line) in shafts {
             // The mouth is a hole in the cavern floor: open from above.
@@ -1528,28 +1529,36 @@ mod tests {
                 assert!(!t.point_in_rock(glam::vec2(mouth_x, h)),
                     "{name} well mouth blocked {h} m above the floor");
             }
-            for &(x, d) in line {
-                assert!(!t.point_in_rock(glam::vec2(x, -d)),
-                    "{name} well is rock at ({x}, -{d})");
+            for &(x, y) in line {
+                assert!(!t.point_in_rock(glam::vec2(x, y)),
+                    "{name} well is rock at ({x}, {y})");
             }
             // Shape pins. A shaft flattened into a plain vertical hole would
-            // still pass every point_in_rock above, so assert the shapes:
-            // the winding well must actually wind (three direction changes),
-            // and the bolt's strokes must be raked past ~63 deg off vertical
-            // — near-horizontal strokes are what make its reversals the
-            // acute hairpins of the KISS logo's S and not a gentle slalom.
+            // still pass every point_in_rock above, so assert the shapes
+            // themselves: how often the centre line reverses sideways (the
+            // winding well's turns) and how often it reverses VERTICALLY
+            // (the siphon climbing between its two U-turns).
             let steps: Vec<(f32, f32)> = line.windows(2)
                 .map(|w| (w[1].0 - w[0].0, w[1].1 - w[0].1)).collect();
             let turns = steps.windows(2).filter(|s| s[0].0 * s[1].0 < 0.0).count();
-            let rake = steps.iter().map(|&(dx, dd)| dx.abs() / dd).fold(0.0, f32::max);
+            let flips = steps.windows(2).filter(|s| s[0].1 * s[1].1 < 0.0).count();
             match name {
                 "winding" => assert!(turns >= 3,
                     "the winding well must turn at least three times, got {turns}"),
-                "lightning" => {
-                    assert!(turns >= 2, "the bolt must zig-zag, got {turns} turns");
-                    assert!(rake >= 2.0,
-                        "the bolt's strokes must rake past 63 deg off vertical \
-                         for a KISS-logo hairpin, got {rake:.1}:1");
+                "siphon" => {
+                    // Down, up, down: two reversals, and the climb has to be
+                    // a real one rather than a wobble.
+                    assert_eq!(flips, 2,
+                        "the siphon must U-turn up and then back down, got {flips}");
+                    let climb: f32 = steps.iter().filter(|s| s.1 > 0.0).map(|s| s.1).sum();
+                    assert!(climb > 15.0,
+                        "the siphon's U-turn must climb properly, got {climb:.1} m");
+                }
+                "deep" => {
+                    let wander = line.iter()
+                        .map(|&(x, _)| (x - 118.0f32).abs()).fold(0.0, f32::max);
+                    assert!(wander < 4.0,
+                        "the deep well must stay near-straight, wandered {wander:.1} m");
                 }
                 _ => {}
             }
@@ -1608,6 +1617,34 @@ mod tests {
         assert!((y - Level::demo().stand_y(0.0)).abs() < 0.5, "ship sank or bounced: y={y}");
         assert!(vy.abs() < 0.2, "ship still moving vertically: vy={vy}");
         assert!(!sim.crashed);
+    }
+
+    #[test]
+    fn fuel_scale_stretches_endurance_without_touching_the_tank() {
+        // Well, well, well flies on fuel_scale = 5: the same burn over the
+        // same second must cost a fifth of the fuel, out of the SAME 100-unit
+        // tank (so the HUD gauge and the pad refuel rate are unchanged).
+        let spend = |scale: f32| {
+            let lvl = Level { fuel_scale: scale, ..Level::demo() };
+            let mut sim = Sim::new(lvl.clone());
+            // Mid-air: a ship parked on the spawn pad would refuel as it burns.
+            let mut kf = spawn_keyframe(&lvl, 30.0);
+            kf.y = lvl.cave_center(30.0);
+            sim.restore(&kf);
+            let burn = InputState::from_controls(1.0, 1, 0.0, 0.0, false);
+            for _ in 0..120 {
+                sim.tick(burn);
+            }
+            (FUEL_MAX - sim.fuel, sim.fuel)
+        };
+        let (stock, _) = spend(1.0);
+        let (scaled, left) = spend(5.0);
+        assert!(stock > 0.0, "the stock burn must actually spend fuel");
+        assert!(
+            (scaled * 5.0 - stock).abs() < 1e-3,
+            "5x endurance must cost a fifth: stock={stock} scaled={scaled}"
+        );
+        assert!(left < FUEL_MAX, "the tank itself is unchanged, only the drain");
     }
 
     #[test]
