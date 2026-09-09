@@ -1501,19 +1501,26 @@ mod tests {
             assert!(!t.point_in_rock(glam::vec2(x as f32, 10.0)),
                 "cavern highway blocked at x={x}");
         }
-        // Each well's centre line, mouth to floor: (x, depth) pairs.
-        let shafts: [(&str, &[(f32, f32)]); 3] = [
-            ("winding", &[(31.4, 5.0), (35.7, 10.0), (37.1, 15.0), (34.2, 20.0),
-                          (29.1, 25.0), (24.9, 30.0), (23.6, 35.0)]),
-            ("lightning", &[(72.0, 5.0), (70.1, 10.0), (66.4, 15.0), (62.0, 20.0),
-                            (70.4, 25.0), (78.0, 30.0), (73.7, 35.0), (70.0, 45.0)]),
-            ("deep", &[(118.8, 10.0), (119.6, 20.0), (119.2, 30.0), (117.9, 40.0),
-                       (116.7, 50.0), (116.5, 60.0), (117.4, 70.0), (118.8, 80.0),
-                       (119.2, 88.0)]),
+        // Each well: mouth x, then its centre line as (x, depth) pairs. The
+        // winding well swings east/west/east (three turns) and the lightning
+        // bolt hairpins back on itself, so these track the real shapes — a
+        // shaft that stopped turning would still pass point_in_rock, but the
+        // waypoints would no longer sit on its centre line.
+        let shafts: [(&str, f32, &[(f32, f32)]); 3] = [
+            ("winding", 30.0,
+             &[(33.8, 5.0), (36.7, 10.0), (26.6, 15.0), (23.3, 20.0),
+               (33.4, 25.0), (36.8, 30.0), (31.2, 35.0)]),
+            ("lightning", 72.0,
+             &[(72.0, 5.0), (69.3, 10.0), (61.3, 15.0), (62.6, 20.0),
+               (77.6, 25.0), (85.3, 30.0), (75.6, 35.0), (65.8, 40.0),
+               (64.0, 45.0)]),
+            ("deep", 118.0,
+             &[(118.8, 10.0), (119.6, 20.0), (119.2, 30.0), (117.9, 40.0),
+               (116.7, 50.0), (116.5, 60.0), (117.4, 70.0), (118.8, 80.0),
+               (119.2, 88.0)]),
         ];
-        for (name, line) in shafts {
+        for (name, mouth_x, line) in shafts {
             // The mouth is a hole in the cavern floor: open from above.
-            let (mouth_x, _) = line[0];
             for h in [2.0f32, 6.0, 12.0] {
                 assert!(!t.point_in_rock(glam::vec2(mouth_x, h)),
                     "{name} well mouth blocked {h} m above the floor");
@@ -1521,6 +1528,27 @@ mod tests {
             for &(x, d) in line {
                 assert!(!t.point_in_rock(glam::vec2(x, -d)),
                     "{name} well is rock at ({x}, -{d})");
+            }
+            // Shape pins. A shaft flattened into a plain vertical hole would
+            // still pass every point_in_rock above, so assert the shapes:
+            // the winding well must actually wind (three direction changes),
+            // and the bolt's strokes must be raked past ~63 deg off vertical
+            // — near-horizontal strokes are what make its reversals the
+            // acute hairpins of the KISS logo's S and not a gentle slalom.
+            let steps: Vec<(f32, f32)> = line.windows(2)
+                .map(|w| (w[1].0 - w[0].0, w[1].1 - w[0].1)).collect();
+            let turns = steps.windows(2).filter(|s| s[0].0 * s[1].0 < 0.0).count();
+            let rake = steps.iter().map(|&(dx, dd)| dx.abs() / dd).fold(0.0, f32::max);
+            match name {
+                "winding" => assert!(turns >= 3,
+                    "the winding well must turn at least three times, got {turns}"),
+                "lightning" => {
+                    assert!(turns >= 2, "the bolt must zig-zag, got {turns} turns");
+                    assert!(rake >= 2.0,
+                        "the bolt's strokes must rake past 63 deg off vertical \
+                         for a KISS-logo hairpin, got {rake:.1}:1");
+                }
+                _ => {}
             }
         }
         for p in &t.pads {

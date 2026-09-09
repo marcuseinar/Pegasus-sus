@@ -634,21 +634,36 @@ last pad; its geometry-lint unit test asserts every chamber / tunnel /
 pad / start waypoint is open space via `Terrain::point_in_rock`) and
 **Well, well, well** (2026-09: the second hand-drawn level — one big
 cavern, uneven roof with hanging spurs, and three vertical WELLS sunk
-into its floor: winding (smooth sine, 40 m), lightning (zig-zag jags,
-50 m) and almost-straight (90 m, the long haul), each ending in a bare
-dead end with a base on it, plus a neutral `start` platform at x = 0.
+into its floor: winding (three smooth turns, 40 m), lightning (a
+KISS-logo bolt, 50 m) and almost-straight (90 m, the long haul), each
+ending in a bare dead end with a base on it, plus a neutral `start`
+platform at x = 0.
 **Time-scored**: down and up each well, the run ends on the last base.
 Its shafts are drawn as PERPENDICULAR offsets of a centre line (a
 horizontal offset would pinch the corridor wherever the shaft leans),
 each one easing into and out of a dead-vertical run at the mouth and the
 floor: a shaft already leaning at the mouth cuts the opening diagonally —
 one lip sunk into the floor, the other standing proud of it — and a
-vertical finish is what gives the base a clean horizontal floor. Amplitude
-is bounded by curvature: once the centre line's radius drops under the
-half-width the mitred inner wall folds. The basement is vertical rock
+vertical finish is what gives the base a clean horizontal floor (it also
+has to be long enough that the deck sits under a plumb shaft, not under
+one still easing over). **Curvature does NOT bound the amplitude** — the
+tempting assumption, and wrong: where the centre line's radius drops
+under the half-width the mitred inner wall self-intersects, but clipping
+that loop (`defold`) IS the correct offset — the corridor opens into a
+rounded bay instead of pinching, so a 40 m shaft can hold three ±7.5 m
+turns at a measured-constant 9 m width. What actually bounds the shapes
+is the rock left between neighbouring wells (≥ 11 m here) and, at the
+bolt's hairpins, stroke length: an acute turn's mitre runs
+`half_width / cos(dev/2)` (~13 m at 135°) along both neighbours, so
+strokes shorter than the two mitres meeting on them collapse. A bolt's
+reversal is twice its strokes' rake off vertical, so KISS-logo hairpins
+mean near-horizontal strokes. The basement is vertical rock
 strips between the wells plus a plug under each floor — overlapping polys,
 buried edges unreachable, the Hollows frame idiom. Lint tests walk every
-shaft's centre line and land the ship on all three bases).
+shaft's centre line, PIN THE SHAPES (winding ≥ 3 direction changes, bolt
+strokes raked ≥ 2:1 — a shaft flattened to a plain vertical hole passes
+every point-in-rock check otherwise) and land the ship on all three
+bases).
 **The Caves** (the original shafted world) was retired 2026-07 with The
 Rift — its world survives as the compiled-in `Level::demo()` (`pads`
 scoring), which remains the no-manifest fallback and the fixture for the
